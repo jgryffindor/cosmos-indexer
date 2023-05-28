@@ -1,8 +1,7 @@
-#[macro_use]
 extern crate lazy_static;
 
-pub mod gravity_info;
 pub mod transactions;
+pub mod types;
 
 const DEVELOPMENT: bool = cfg!(feature = "development");
 

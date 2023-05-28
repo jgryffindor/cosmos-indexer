@@ -1,5 +1,4 @@
-use crate::transactions::database::CustomCoin;
-use crate::transactions::database::{ApiResponse, CustomMsgSendToEth, CustomMsgTransfer};
+use crate::types::{ApiResponse, CustomMsgSendToEth, CustomMsgTransfer, CustomCoin};
 
 use actix_web::Responder;
 use actix_web::{web, HttpResponse};

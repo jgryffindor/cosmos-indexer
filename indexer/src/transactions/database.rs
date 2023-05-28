@@ -1,4 +1,3 @@
-use crate::gravity_info::{GRAVITY_NODE_GRPC, GRAVITY_PREFIX, REQUEST_TIMEOUT};
 use actix_rt::System;
 use cosmos_sdk_proto_althea::{
     cosmos::tx::v1beta1::{TxBody, TxRaw},
@@ -10,7 +9,6 @@ use gravity_proto::gravity::MsgSendToEth;
 use lazy_static::lazy_static;
 use log::{error, info};
 use rocksdb::DB;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{
@@ -19,6 +17,12 @@ use std::{
     time::Instant,
 };
 use tokio::time::sleep;
+
+use crate::types::{CustomMsgSendToEth, CustomMsgTransfer, CustomHeight, CustomCoin};
+
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub const CHAIN_NODE_GRPC: &str = "http://osmosis-grpc.polkachu.com:12590";
+pub const CHAIN_PREFIX: &str = "osmosis";
 
 lazy_static! {
     static ref COUNTER: Arc<RwLock<Counters>> = Arc::new(RwLock::new(Counters {
@@ -38,32 +42,6 @@ pub struct Counters {
     send_eth_msgs: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CustomMsgSendToEth {
-    sender: String,
-    eth_dest: String,
-    pub amount: Vec<CustomCoin>,
-    pub bridge_fee: Vec<CustomCoin>,
-    pub chain_fee: Vec<CustomCoin>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CustomMsgTransfer {
-    source_port: String,
-    source_channel: String,
-    token: Vec<CustomCoin>,
-    sender: String,
-    receiver: String,
-    timeout_height: Option<CustomHeight>,
-    timeout_timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CustomHeight {
-    pub revision_number: u64,
-    pub revision_height: u64,
-}
-
 impl From<&Height> for CustomHeight {
     fn from(height: &Height) -> Self {
         CustomHeight {
@@ -71,18 +49,6 @@ impl From<&Height> for CustomHeight {
             revision_height: height.revision_height,
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CustomCoin {
-    pub denom: String,
-    pub amount: String,
-}
-
-#[derive(Serialize)]
-pub struct ApiResponse {
-    pub tx_hash: String,
-    pub data: serde_json::Value,
 }
 
 impl From<&MsgSendToEth> for CustomMsgSendToEth {
@@ -355,7 +321,7 @@ pub fn transaction_info_thread(db: Arc<DB>) {
 /// then writes them to the db
 pub async fn transactions(db: &DB) -> Result<(), Box<dyn std::error::Error>> {
     info!("Started downloading & parsing transactions");
-    let contact: Contact = Contact::new(GRAVITY_NODE_GRPC, REQUEST_TIMEOUT, GRAVITY_PREFIX)?;
+    let contact: Contact = Contact::new(CHAIN_NODE_GRPC, REQUEST_TIMEOUT, CHAIN_PREFIX)?;
 
     let mut retries = 0;
     let status = loop {
