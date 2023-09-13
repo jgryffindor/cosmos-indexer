@@ -21,8 +21,8 @@ use tokio::time::sleep;
 use crate::types::{CustomMsgSendToEth, CustomMsgTransfer, CustomHeight, CustomCoin};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-pub const CHAIN_NODE_GRPC: &str = "http://osmosis-grpc.polkachu.com:12590";
-pub const CHAIN_PREFIX: &str = "osmosis";
+pub const CHAIN_NODE_GRPC: &str = "http://akash-grpc.polkachu.com:12890";
+pub const CHAIN_PREFIX: &str = "akash";
 
 lazy_static! {
     static ref COUNTER: Arc<RwLock<Counters>> = Arc::new(RwLock::new(Counters {
