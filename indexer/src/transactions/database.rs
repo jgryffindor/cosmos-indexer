@@ -2,10 +2,11 @@ use actix_rt::System;
 use cosmos_sdk_proto_althea::{
     cosmos::tx::v1beta1::{TxBody, TxRaw},
     ibc::{applications::transfer::v1::MsgTransfer, core::client::v1::Height},
+    cosmos::bank::v1beta1::MsgSend,
 };
 use deep_space::{client::Contact, utils::decode_any};
 use futures::future::join_all;
-use gravity_proto::gravity::MsgSendToEth;
+
 use lazy_static::lazy_static;
 use log::{error, info};
 use rocksdb::DB;
@@ -18,11 +19,10 @@ use std::{
 };
 use tokio::time::sleep;
 
-use crate::types::{CustomMsgSendToEth, CustomMsgTransfer, CustomHeight, CustomCoin};
+use crate::types::{CustomMsgSend, CustomMsgTransfer, CustomHeight, CustomCoin};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-pub const CHAIN_NODE_GRPC: &str = "http://akash-grpc.polkachu.com:12890";
-pub const CHAIN_PREFIX: &str = "akash";
+
 
 lazy_static! {
     static ref COUNTER: Arc<RwLock<Counters>> = Arc::new(RwLock::new(Counters {
@@ -30,7 +30,7 @@ lazy_static! {
         transactions: 0,
         msgs: 0,
         ibc_msgs: 0,
-        send_eth_msgs: 0
+        send_msgs: 0
     }));
 }
 
@@ -39,9 +39,8 @@ pub struct Counters {
     transactions: u64,
     msgs: u64,
     ibc_msgs: u64,
-    send_eth_msgs: u64,
+    send_msgs: u64, // Changed from send_eth_msgs
 }
-
 impl From<&Height> for CustomHeight {
     fn from(height: &Height) -> Self {
         CustomHeight {
@@ -51,38 +50,15 @@ impl From<&Height> for CustomHeight {
     }
 }
 
-impl From<&MsgSendToEth> for CustomMsgSendToEth {
-    fn from(msg: &MsgSendToEth) -> Self {
-        CustomMsgSendToEth {
-            sender: msg.sender.clone(),
-            eth_dest: msg.eth_dest.clone(),
-            amount: msg
-                .amount
-                .as_ref()
-                .map(|coin| CustomCoin {
-                    denom: coin.denom.clone(),
-                    amount: coin.amount.clone(),
-                })
-                .into_iter()
-                .collect(),
-            bridge_fee: msg
-                .bridge_fee
-                .as_ref()
-                .map(|coin| CustomCoin {
-                    denom: coin.denom.clone(),
-                    amount: coin.amount.clone(),
-                })
-                .into_iter()
-                .collect(),
-            chain_fee: msg
-                .chain_fee
-                .as_ref()
-                .map(|coin| CustomCoin {
-                    denom: coin.denom.clone(),
-                    amount: coin.amount.clone(),
-                })
-                .into_iter()
-                .collect(),
+impl From<&MsgSend> for CustomMsgSend {
+    fn from(msg: &MsgSend) -> Self {
+        CustomMsgSend {
+            from_address: msg.from_address.clone(),
+            to_address: msg.to_address.clone(),
+            amount: msg.amount.iter().map(|coin| CustomCoin {
+                denom: coin.denom.clone(),
+                amount: coin.amount.clone(),
+            }).collect(),
         }
     }
 }
@@ -175,7 +151,7 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
         let mut tx_counter = 0;
         let mut msg_counter = 0;
         let mut ibc_transfer_counter = 0;
-        let mut send_eth_counter = 0;
+        let mut send_msg_counter = 0;
         let blocks_len = blocks.len() as u64;
 
         for block in blocks.into_iter() {
@@ -198,24 +174,22 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                 };
                 let tx_body: TxBody = decode_any(body_any).unwrap();
 
-                let mut has_msg_send_to_eth = false;
+           
                 let mut has_msg_ibc_transfer = false;
 
                 // tx sorting
                 for message in tx_body.messages {
-                    if message.type_url == "/gravity.v1.MsgSendToEth" {
-                        has_msg_send_to_eth = true;
+                    if message.type_url == "/cosmos.bank.v1beta1.MsgSend" {
                         msg_counter += 1;
-
-                        let msg_send_to_eth_any = prost_types::Any {
-                            type_url: "/gravity.v1.MsgSendToEth".to_string(),
+            
+                        let msg_send_any = prost_types::Any {
+                            type_url: "/cosmos.bank.v1beta1.MsgSend".to_string(),
                             value: message.value,
                         };
-                        let msg_send_to_eth: Result<MsgSendToEth, _> =
-                            decode_any(msg_send_to_eth_any);
-
-                        if let Ok(msg_send_to_eth) = msg_send_to_eth {
-                            let custom_msg_send_to_eth = CustomMsgSendToEth::from(&msg_send_to_eth);
+                        let msg_send: Result<MsgSend, _> = decode_any(msg_send_any);
+            
+                        if let Ok(msg_send) = msg_send {
+                            let custom_msg_send = CustomMsgSend::from(&msg_send);
                             let timestamp = block
                                 .header
                                 .as_ref()
@@ -225,10 +199,11 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                                 .unwrap()
                                 .seconds;
                             let key = format!(
-                                "{:012}:msgSendToEth:{}:{}",
+                                "{:012}:msgSend:{}:{}",
                                 block_number, timestamp, tx_hash
                             );
-                            save_msg_send_to_eth(db, &key, &custom_msg_send_to_eth);
+                            save_msg_send(db, &key, &custom_msg_send);
+                            send_msg_counter += 1;
                         }
                     } else if message.type_url == "/ibc.applications.transfer.v1.MsgTransfer" {
                         has_msg_ibc_transfer = true;
@@ -260,10 +235,7 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                     }
                 }
 
-                if has_msg_send_to_eth {
-                    tx_counter += 1;
-                    send_eth_counter += 1;
-                }
+            
                 if has_msg_ibc_transfer {
                     tx_counter += 1;
                     ibc_transfer_counter += 1;
@@ -279,17 +251,23 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
         c.transactions += tx_counter;
         c.msgs += msg_counter;
         c.ibc_msgs += ibc_transfer_counter;
-        c.send_eth_msgs += send_eth_counter;
+        c.send_msgs += send_msg_counter;
     }
 }
 
-pub fn transaction_info_thread(db: Arc<DB>) {
+pub fn transaction_info_thread(
+    db: Arc<DB>,
+    chain_node_grpc: String,
+    chain_prefix: String,
+    test_mode: bool,
+    test_block_limit: u64,
+) {
     info!("Starting transaction info thread");
 
     thread::spawn(move || loop {
         let runner = System::new();
         runner.block_on(async {
-            match transactions(&db).await {
+            match transactions(&db, &chain_node_grpc, &chain_prefix, test_mode, test_block_limit).await {
                 Ok(_) => (),
                 Err(e) => {
                     error!("Error downloading transactions: {:?}", e);
@@ -297,7 +275,7 @@ pub fn transaction_info_thread(db: Arc<DB>) {
                     loop {
                         info!("Retrying block download");
                         sleep(retry_interval).await;
-                        match transactions(&db).await {
+                        match transactions(&db, &chain_node_grpc, &chain_prefix, test_mode, test_block_limit).await {
                             Ok(_) => break,
                             Err(e) => {
                                 error!("Error in transaction download retry: {:?}", e);
@@ -319,9 +297,15 @@ pub fn transaction_info_thread(db: Arc<DB>) {
 
 /// creates batches of transactions found and sorted using the search function
 /// then writes them to the db
-pub async fn transactions(db: &DB) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn transactions(
+    db: &DB,
+    chain_node_grpc: &str,
+    chain_prefix: &str,
+    test_mode: bool,
+    test_block_limit: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     info!("Started downloading & parsing transactions");
-    let contact: Contact = Contact::new(CHAIN_NODE_GRPC, REQUEST_TIMEOUT, CHAIN_PREFIX)?;
+    let contact: Contact = Contact::new(chain_node_grpc, REQUEST_TIMEOUT, chain_prefix)?;
 
     let mut retries = 0;
     let status = loop {
@@ -386,6 +370,12 @@ pub async fn transactions(db: &DB) -> Result<(), Box<dyn std::error::Error>> {
         None => earliest_block,
     };
 
+ let end_block = if test_mode {
+        std::cmp::min(earliest_block + test_block_limit, latest_block)
+    } else {
+        latest_block
+    };
+
     info!(
         "This node has {} blocks to download, downloading to database",
         latest_block - earliest_block
@@ -398,14 +388,14 @@ pub async fn transactions(db: &DB) -> Result<(), Box<dyn std::error::Error>> {
     const EXECUTE_SIZE: usize = 10;
     let mut pos = earliest_block;
     let mut futures = Vec::new();
-    while pos < latest_block {
+    while pos < end_block {
         let start = pos;
-        let end = if latest_block - pos > BATCH_SIZE {
+        let end = if end_block - pos > BATCH_SIZE {
             pos += BATCH_SIZE;
             pos
         } else {
-            pos = latest_block;
-            latest_block
+            pos = end_block;
+            end_block
         };
         let fut = search(&contact, start, end, db);
         futures.push(fut);
@@ -430,20 +420,20 @@ pub async fn transactions(db: &DB) -> Result<(), Box<dyn std::error::Error>> {
     let _ = join_all(buf).await;
 
     let counter = COUNTER.read().unwrap();
-    info!(
-        "Successfully downloaded {} blocks and {} tx containing {} send_to_eth msgs and {} ibc_transfer msgs in {} seconds",
-        counter.blocks,
-        counter.transactions,
-        counter.send_eth_msgs,
-        counter.ibc_msgs,
-        start.elapsed().as_secs()
-    );
+   info!(
+    "Successfully downloaded {} blocks and {} tx containing {} send msgs and {} ibc_transfer msgs in {} seconds",
+    counter.blocks,
+    counter.transactions,
+    counter.send_msgs, 
+    counter.ibc_msgs,
+    start.elapsed().as_secs()
+);
     save_last_download_block(db, latest_block);
     Ok(())
 }
 
 //saves serialized transactions to database
-pub fn save_msg_send_to_eth(db: &DB, key: &str, data: &CustomMsgSendToEth) {
+pub fn save_msg_send(db: &DB, key: &str, data: &CustomMsgSend) {
     let data_json = serde_json::to_string(data).unwrap();
     db.put(key.as_bytes(), data_json.as_bytes()).unwrap();
 }
@@ -454,9 +444,9 @@ pub fn save_msg_ibc_transfer(db: &DB, key: &str, data: &CustomMsgTransfer) {
 }
 
 // Load & deseralize transactions
-pub fn load_msg_send_to_eth(db: &DB, key: &str) -> Option<CustomMsgSendToEth> {
+pub fn load_msg_send(db: &DB, key: &str) -> Option<CustomMsgSend> {
     let res = db.get(key.as_bytes()).unwrap();
-    res.map(|bytes| serde_json::from_slice::<CustomMsgSendToEth>(&bytes).unwrap())
+    res.map(|bytes| serde_json::from_slice::<CustomMsgSend>(&bytes).unwrap())
 }
 
 pub fn load_msg_ibc_transfer(db: &DB, key: &str) -> Option<CustomMsgTransfer> {

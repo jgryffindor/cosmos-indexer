@@ -38,3 +38,16 @@ pub struct ApiResponse {
     pub data: serde_json::Value,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CustomMsgSend {
+    pub from_address: String,
+    pub to_address: String,
+    pub amount: Vec<CustomCoin>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CustomMsg {
+    pub type_url: String,
+    pub value: serde_json::Value,
+}
+
