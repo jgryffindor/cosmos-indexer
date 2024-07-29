@@ -95,6 +95,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(api_db.clone())
             .service(get_all_msg_send_transactions)
             .service(get_all_msg_ibc_transfer_transactions)
+            .service(get_msg_send_transactions_by_address)
+            .service(get_msg_send_transactions_by_address_and_direction)
     });
 
     let server = server.bind(format!("{}:{}", DOMAIN, PORT))?;
