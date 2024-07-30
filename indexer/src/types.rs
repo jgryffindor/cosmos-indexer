@@ -11,7 +11,7 @@ pub struct CustomMsgSendToEth {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CustomMsgTransfer {
-   pub source_port: String,
+    pub source_port: String,
     pub source_channel: String,
     pub token: Vec<CustomCoin>,
     pub sender: String,
@@ -50,4 +50,3 @@ pub struct CustomMsg {
     pub type_url: String,
     pub value: serde_json::Value,
 }
-

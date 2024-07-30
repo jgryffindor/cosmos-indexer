@@ -19,7 +19,6 @@ struct BlockTransactions {
     formatted_date: String,
 }
 
-
 #[derive(Serialize)]
 struct TransactionResponse {
     tx_hash: String,
@@ -48,7 +47,7 @@ pub async fn get_msg_send_transactions_by_address_and_direction(
         "receive" => Some(false),
         _ => return HttpResponse::BadRequest().body("Invalid direction. Use 'send' or 'receive'."),
     };
-    
+
     let transactions = get_filtered_transactions(&db, &address, direction);
     HttpResponse::Ok().json(transactions)
 }
@@ -67,7 +66,7 @@ fn get_filtered_transactions(
             let key_parts: Vec<&str> = key_str.split(':').collect();
             if key_parts.len() == 4 && key_parts[1] == "msgSend" {
                 let msg_send: CustomMsgSend = serde_json::from_slice(&value).unwrap();
-                
+
                 let is_sender_match = match is_sender {
                     Some(true) => msg_send.from_address == address,
                     Some(false) => msg_send.to_address == address,
@@ -255,4 +254,3 @@ pub async fn get_all_msg_ibc_transfer_transactions(db: web::Data<Arc<DB>>) -> im
 
     HttpResponse::Ok().json(response_data)
 }
-

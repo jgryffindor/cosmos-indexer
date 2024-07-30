@@ -1,8 +1,8 @@
 use actix_rt::System;
 use cosmos_sdk_proto_althea::{
+    cosmos::bank::v1beta1::MsgSend,
     cosmos::tx::v1beta1::{TxBody, TxRaw},
     ibc::{applications::transfer::v1::MsgTransfer, core::client::v1::Height},
-    cosmos::bank::v1beta1::MsgSend,
 };
 use deep_space::{client::Contact, utils::decode_any};
 use futures::future::join_all;
@@ -19,10 +19,9 @@ use std::{
 };
 use tokio::time::sleep;
 
-use crate::types::{CustomMsgSend, CustomMsgTransfer, CustomHeight, CustomCoin};
+use crate::types::{CustomCoin, CustomHeight, CustomMsgSend, CustomMsgTransfer};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 
 lazy_static! {
     static ref COUNTER: Arc<RwLock<Counters>> = Arc::new(RwLock::new(Counters {
@@ -55,10 +54,14 @@ impl From<&MsgSend> for CustomMsgSend {
         CustomMsgSend {
             from_address: msg.from_address.clone(),
             to_address: msg.to_address.clone(),
-            amount: msg.amount.iter().map(|coin| CustomCoin {
-                denom: coin.denom.clone(),
-                amount: coin.amount.clone(),
-            }).collect(),
+            amount: msg
+                .amount
+                .iter()
+                .map(|coin| CustomCoin {
+                    denom: coin.denom.clone(),
+                    amount: coin.amount.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -174,20 +177,19 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                 };
                 let tx_body: TxBody = decode_any(body_any).unwrap();
 
-           
                 let mut has_msg_ibc_transfer = false;
 
                 // tx sorting
                 for message in tx_body.messages {
                     if message.type_url == "/cosmos.bank.v1beta1.MsgSend" {
                         msg_counter += 1;
-            
+
                         let msg_send_any = prost_types::Any {
                             type_url: "/cosmos.bank.v1beta1.MsgSend".to_string(),
                             value: message.value,
                         };
                         let msg_send: Result<MsgSend, _> = decode_any(msg_send_any);
-            
+
                         if let Ok(msg_send) = msg_send {
                             let custom_msg_send = CustomMsgSend::from(&msg_send);
                             let timestamp = block
@@ -198,10 +200,8 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                                 .as_ref()
                                 .unwrap()
                                 .seconds;
-                            let key = format!(
-                                "{:012}:msgSend:{}:{}",
-                                block_number, timestamp, tx_hash
-                            );
+                            let key =
+                                format!("{:012}:msgSend:{}:{}", block_number, timestamp, tx_hash);
                             save_msg_send(db, &key, &custom_msg_send);
                             send_msg_counter += 1;
                         }
@@ -235,7 +235,6 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
                     }
                 }
 
-            
                 if has_msg_ibc_transfer {
                     tx_counter += 1;
                     ibc_transfer_counter += 1;
@@ -267,7 +266,15 @@ pub fn transaction_info_thread(
     thread::spawn(move || loop {
         let runner = System::new();
         runner.block_on(async {
-            match transactions(&db, &chain_node_grpc, &chain_prefix, test_mode, test_block_limit).await {
+            match transactions(
+                &db,
+                &chain_node_grpc,
+                &chain_prefix,
+                test_mode,
+                test_block_limit,
+            )
+            .await
+            {
                 Ok(_) => (),
                 Err(e) => {
                     error!("Error downloading transactions: {:?}", e);
@@ -275,7 +282,15 @@ pub fn transaction_info_thread(
                     loop {
                         info!("Retrying block download");
                         sleep(retry_interval).await;
-                        match transactions(&db, &chain_node_grpc, &chain_prefix, test_mode, test_block_limit).await {
+                        match transactions(
+                            &db,
+                            &chain_node_grpc,
+                            &chain_prefix,
+                            test_mode,
+                            test_block_limit,
+                        )
+                        .await
+                        {
                             Ok(_) => break,
                             Err(e) => {
                                 error!("Error in transaction download retry: {:?}", e);
@@ -370,7 +385,7 @@ pub async fn transactions(
         None => earliest_block,
     };
 
- let end_block = if test_mode {
+    let end_block = if test_mode {
         std::cmp::min(earliest_block + test_block_limit, latest_block)
     } else {
         latest_block
@@ -420,11 +435,11 @@ pub async fn transactions(
     let _ = join_all(buf).await;
 
     let counter = COUNTER.read().unwrap();
-   info!(
+    info!(
     "Successfully downloaded {} blocks and {} tx containing {} send msgs and {} ibc_transfer msgs in {} seconds",
     counter.blocks,
     counter.transactions,
-    counter.send_msgs, 
+    counter.send_msgs,
     counter.ibc_msgs,
     start.elapsed().as_secs()
 );

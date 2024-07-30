@@ -13,16 +13,16 @@ const DOMAIN: &str = if cfg!(test) || DEVELOPMENT {
 const PORT: u16 = 9000;
 
 use actix_cors::Cors;
-use actix_web::{get, web, App, HttpServer, Responder,};
 use actix_web::web::Path;
+use actix_web::{get, web, App, HttpServer, Responder};
 
 use env_logger::Env;
 use rocksdb::Options;
 use rocksdb::DB;
 
+use clap::Parser;
 use std::sync::Arc;
 use transactions::database::transaction_info_thread;
-use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -64,10 +64,11 @@ async fn get_msg_send_transactions_by_address_and_direction(
     path: Path<(String, String)>,
 ) -> impl Responder {
     let (address, direction) = path.into_inner();
-    transactions::endpoints::get_msg_send_transactions_by_address_and_direction(db, address, direction).await
+    transactions::endpoints::get_msg_send_transactions_by_address_and_direction(
+        db, address, direction,
+    )
+    .await
 }
-
-
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -82,7 +83,13 @@ async fn main() -> std::io::Result<()> {
     let api_db = web::Data::new(db.clone());
 
     // Pass the arguments to the transaction_info_thread
-    transaction_info_thread(db.clone(), args.chain_node_grpc, args.chain_prefix, args.test_mode, args.test_block_limit);
+    transaction_info_thread(
+        db.clone(),
+        args.chain_node_grpc,
+        args.chain_prefix,
+        args.test_mode,
+        args.test_block_limit,
+    );
 
     let server = HttpServer::new(move || {
         App::new()
