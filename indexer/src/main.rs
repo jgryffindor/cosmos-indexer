@@ -14,7 +14,9 @@ const PORT: u16 = 9000;
 
 use actix_cors::Cors;
 use actix_web::web::Path;
+use actix_web::{error, middleware::Logger, HttpResponse};
 use actix_web::{get, web, App, HttpServer, Responder};
+use log::error;
 
 use env_logger::Env;
 use rocksdb::Options;
@@ -73,7 +75,6 @@ async fn get_msg_send_transactions_by_address_and_direction(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-
     openssl_probe::init_ssl_cert_env_vars();
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
@@ -93,17 +94,25 @@ async fn main() -> std::io::Result<()> {
 
     let server = HttpServer::new(move || {
         App::new()
+            .wrap(Logger::default())
+            .wrap(Logger::new("%a %{User-Agent}i"))
             .wrap(
                 Cors::default()
                     .allow_any_origin()
                     .allow_any_header()
-                    .allow_any_method(),
+                    .allow_any_method()
+                    .max_age(3600),
             )
             .app_data(api_db.clone())
+            .app_data(web::JsonConfig::default().error_handler(|err, _req| {
+                error!("JSON error: {:?}", err);
+                error::InternalError::from_response(err, HttpResponse::BadRequest().finish()).into()
+            }))
             .service(get_all_msg_send_transactions)
             .service(get_all_msg_ibc_transfer_transactions)
             .service(get_msg_send_transactions_by_address)
             .service(get_msg_send_transactions_by_address_and_direction)
+            .default_service(web::route().to(|| HttpResponse::NotFound()))
     });
 
     let server = server.bind(format!("{}:{}", DOMAIN, PORT))?;

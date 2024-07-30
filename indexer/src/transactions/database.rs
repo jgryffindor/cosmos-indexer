@@ -3,6 +3,7 @@ use cosmos_sdk_proto_althea::{
     cosmos::bank::v1beta1::MsgSend,
     cosmos::tx::v1beta1::{TxBody, TxRaw},
     ibc::{applications::transfer::v1::MsgTransfer, core::client::v1::Height},
+    tendermint::types::Block,
 };
 use deep_space::{client::Contact, utils::decode_any};
 use futures::future::join_all;
@@ -108,8 +109,36 @@ async fn get_earliest_block(contact: &Contact, mut start: u64, mut end: u64) -> 
     start + 1
 }
 
+async fn get_latest_block(contact: &Contact) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut retries = 0;
+    loop {
+        match contact.get_chain_status().await {
+            Ok(deep_space::client::ChainStatus::Moving { block_height }) => {
+                return Ok(block_height);
+            }
+            Ok(_) => {
+                retries += 1;
+                if retries >= MAX_RETRIES {
+                    return Err("Failed to get moving chain status".into());
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                retries += 1;
+                if retries >= MAX_RETRIES {
+                    return Err(Box::new(e));
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 // Loads sendToEth & MsgTransfer messages from grpc endpoint & downlaods to DB
 async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
+    if start > end {
+        return;
+    }
     let mut current_start = start;
     let retries = AtomicUsize::new(0);
 
@@ -254,6 +283,91 @@ async fn search(contact: &Contact, start: u64, end: u64, db: &DB) {
     }
 }
 
+async fn continuous_indexing(db: &DB, chain_node_grpc: &str, chain_prefix: &str) {
+    let contact: Contact = Contact::new(chain_node_grpc, REQUEST_TIMEOUT, chain_prefix).unwrap();
+
+    loop {
+        let last_indexed_block = load_last_download_block(db).unwrap_or(0);
+        let latest_block = match get_latest_block(&contact).await {
+            Ok(block) => block,
+            Err(e) => {
+                error!("Error getting latest block: {:?}", e);
+                sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        if latest_block > last_indexed_block {
+            for block_height in (last_indexed_block + 1)..=latest_block {
+                match contact.get_block(block_height).await {
+                    Ok(Some(block)) => {
+                        process_block(&contact, &block, db).await;
+                        info!("Processed block {}", block_height);
+                    }
+                    Ok(None) => {
+                        error!("Block {} not found", block_height);
+                    }
+                    Err(e) => {
+                        error!("Error fetching block {}: {:?}", block_height, e);
+                    }
+                }
+            }
+            save_last_download_block(db, latest_block);
+        }
+
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn process_block(_contact: &Contact, block: &Block, db: &DB) {
+    let block_number = block.header.as_ref().unwrap().height;
+    let timestamp = block
+        .header
+        .as_ref()
+        .unwrap()
+        .time
+        .as_ref()
+        .unwrap()
+        .seconds;
+
+    for tx in block.data.as_ref().unwrap().txs.iter() {
+        let raw_tx_any = prost_types::Any {
+            type_url: "/cosmos.tx.v1beta1.TxRaw".to_string(),
+            value: tx.clone(),
+        };
+        let tx_raw: TxRaw = decode_any(raw_tx_any.clone()).unwrap();
+        let value_ref: &[u8] = raw_tx_any.value.as_ref();
+        let tx_hash = sha256::digest(value_ref).to_uppercase();
+        let body_any = prost_types::Any {
+            type_url: "/cosmos.tx.v1beta1.TxBody".to_string(),
+            value: tx_raw.body_bytes,
+        };
+        let tx_body: TxBody = decode_any(body_any).unwrap();
+
+        for message in tx_body.messages {
+            info!("Processing message: {:?}", message.type_url);
+            match message.type_url.as_str() {
+                "/cosmos.bank.v1beta1.MsgSend" => {
+                    let msg_send: MsgSend = decode_any(message).unwrap();
+                    let custom_msg_send = CustomMsgSend::from(&msg_send);
+                    let key = format!("{:012}:msgSend:{}:{}", block_number, timestamp, tx_hash);
+                    save_msg_send(db, &key, &custom_msg_send);
+                }
+                "/ibc.applications.transfer.v1.MsgTransfer" => {
+                    let msg_ibc_transfer: MsgTransfer = decode_any(message).unwrap();
+                    let custom_ibc_transfer = CustomMsgTransfer::from(&msg_ibc_transfer);
+                    let key = format!(
+                        "{:012}:msgIbcTransfer:{}:{}",
+                        block_number, timestamp, tx_hash
+                    );
+                    save_msg_ibc_transfer(db, &key, &custom_ibc_transfer);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn transaction_info_thread(
     db: Arc<DB>,
     chain_node_grpc: String,
@@ -263,49 +377,52 @@ pub fn transaction_info_thread(
 ) {
     info!("Starting transaction info thread");
 
-    thread::spawn(move || loop {
+    thread::spawn(move || {
         let runner = System::new();
         runner.block_on(async {
-            match transactions(
-                &db,
-                &chain_node_grpc,
-                &chain_prefix,
-                test_mode,
-                test_block_limit,
-            )
-            .await
-            {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("Error downloading transactions: {:?}", e);
-                    let mut retry_interval = Duration::from_secs(1);
-                    loop {
-                        info!("Retrying block download");
-                        sleep(retry_interval).await;
-                        match transactions(
-                            &db,
-                            &chain_node_grpc,
-                            &chain_prefix,
-                            test_mode,
-                            test_block_limit,
-                        )
-                        .await
-                        {
-                            Ok(_) => break,
-                            Err(e) => {
-                                error!("Error in transaction download retry: {:?}", e);
-                                retry_interval =
-                                    if let Some(new_interval) = retry_interval.checked_mul(2) {
-                                        new_interval
-                                    } else {
-                                        retry_interval
-                                    };
+            loop {
+                match transactions(
+                    &db,
+                    &chain_node_grpc,
+                    &chain_prefix,
+                    test_mode,
+                    test_block_limit,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        continuous_indexing(&db, &chain_node_grpc, &chain_prefix).await;
+                    }
+                    Err(e) => {
+                        error!("Error downloading transactions: {:?}", e);
+                        let mut retry_interval = Duration::from_secs(1);
+                        loop {
+                            info!("Retrying block download");
+                            sleep(retry_interval).await;
+                            match transactions(
+                                &db,
+                                &chain_node_grpc,
+                                &chain_prefix,
+                                test_mode,
+                                test_block_limit,
+                            )
+                            .await
+                            {
+                                Ok(_) => break,
+                                Err(e) => {
+                                    error!("Error in transaction download retry: {:?}", e);
+                                    retry_interval =
+                                        if let Some(new_interval) = retry_interval.checked_mul(2) {
+                                            new_interval
+                                        } else {
+                                            retry_interval
+                                        };
+                                }
                             }
                         }
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await; // Sleep for 24 hours
         });
     });
 }
@@ -391,6 +508,8 @@ pub async fn transactions(
         latest_block
     };
 
+    info!("There are already {} blocks in the database.", latest_block,);
+
     info!(
         "This node has {} blocks to download, downloading to database",
         latest_block - earliest_block
@@ -443,7 +562,7 @@ pub async fn transactions(
     counter.ibc_msgs,
     start.elapsed().as_secs()
 );
-    save_last_download_block(db, latest_block);
+    save_last_download_block(db, end_block);
     Ok(())
 }
 
