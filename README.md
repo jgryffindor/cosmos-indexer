@@ -2,7 +2,7 @@
 
 ### Summary/Credits
 
-An API, built in Rust, that indexes and stores Cosmos messages with rocksDB. This is a continuation/fork of work that was done for [Gravity Bridge]()'s [gravity-info-api]() by Chandra Station to store and index transactions in conjunction with the analytics functionality and core API framework built by [Justin Kilpatrick]() at [Althea]() & [Gravity Bridge](),
+An API, built in Rust, that indexes and stores Cosmos messages with rocksDB. This is a continuation/fork of work that was done for [Gravity Bridge]()'s [gravity-info-api]() by Chandra Station to store and index transactions in conjunction with the analytical functionality and core API framework built by [Justin Kilpatrick]() at [Althea]() & [Gravity Bridge](),
 
 Using GRPC, a connection is made to a node with bocks. The blocks are then filtered for messages, then message types, and finally stored to be served via the web api. The api provides various endpoints to deliver the transaction data in a structured format.
 
