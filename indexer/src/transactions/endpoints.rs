@@ -27,7 +27,82 @@ struct TransactionResponse {
     data: CustomMsgSend,
 }
 
+#[derive(Serialize)]
+struct AllTransactionResponse {
+    tx_hash: String,
+    block_number: u64,
+    formatted_date: String,
+    transaction_type: String,
+    data: serde_json::Value,
+}
+
 type BlockData = (String, Vec<ApiResponse>);
+
+pub async fn get_all_transactions(db: web::Data<Arc<DB>>) -> impl Responder {
+    let transactions = get_all_filtered_transactions(&db, None);
+    HttpResponse::Ok().json(transactions)
+}
+
+pub async fn get_all_transactions_by_address(
+    db: web::Data<Arc<DB>>,
+    address: String,
+) -> impl Responder {
+    let transactions = get_all_filtered_transactions(&db, Some(&address));
+    HttpResponse::Ok().json(transactions)
+}
+
+fn get_all_filtered_transactions(
+    db: &Arc<DB>,
+    address: Option<&str>,
+) -> Vec<AllTransactionResponse> {
+    let mut response_data = Vec::new();
+    let iterator = db.iterator(rocksdb::IteratorMode::Start);
+
+    for item in iterator {
+        if let Ok((key, value)) = item {
+            let key_str = String::from_utf8_lossy(&key);
+            let key_parts: Vec<&str> = key_str.split(':').collect();
+            if key_parts.len() == 4 {
+                let transaction_type = key_parts[1];
+                let block_number = key_parts[0].parse::<u64>().unwrap();
+                let timestamp = key_parts[2].parse::<i64>().unwrap();
+                let formatted_date = format_date(timestamp);
+
+                let (data, is_relevant) = match transaction_type {
+                    "msgSend" => {
+                        let msg_send: CustomMsgSend = serde_json::from_slice(&value).unwrap();
+                        let is_relevant = address.map_or(true, |addr| {
+                            msg_send.from_address == addr || msg_send.to_address == addr
+                        });
+                        (serde_json::to_value(&msg_send).unwrap(), is_relevant)
+                    }
+                    "msgIbcTransfer" => {
+                        let msg_transfer: CustomMsgTransfer =
+                            serde_json::from_slice(&value).unwrap();
+                        let is_relevant = address.map_or(true, |addr| {
+                            msg_transfer.sender == addr || msg_transfer.receiver == addr
+                        });
+                        (serde_json::to_value(&msg_transfer).unwrap(), is_relevant)
+                    }
+                    _ => continue,
+                };
+
+                if is_relevant {
+                    response_data.push(AllTransactionResponse {
+                        tx_hash: key_parts[3].to_string(),
+                        block_number,
+                        formatted_date,
+                        transaction_type: transaction_type.to_string(),
+                        data,
+                    });
+                }
+            }
+        }
+    }
+
+    response_data.sort_by(|a, b| b.block_number.cmp(&a.block_number));
+    response_data
+}
 
 pub async fn get_msg_send_transactions_by_address(
     db: web::Data<Arc<DB>>,
@@ -101,8 +176,7 @@ fn format_date(timestamp: i64) -> String {
 }
 
 pub async fn get_all_msg_send_transactions(db: web::Data<Arc<DB>>) -> impl Responder {
-    let mut response_data: HashMap<u64, BlockData> = HashMap::new();
-
+    let mut response_data = Vec::new();
     let iterator = db.iterator(rocksdb::IteratorMode::Start);
 
     for item in iterator {
@@ -111,45 +185,22 @@ pub async fn get_all_msg_send_transactions(db: web::Data<Arc<DB>>) -> impl Respo
                 let key_str = String::from_utf8_lossy(&key);
                 let key_parts: Vec<&str> = key_str.split(':').collect();
                 if key_parts.len() == 4 && key_parts[1] == "msgSend" {
-                    let msg_send: CustomMsgSend = serde_json::from_slice(&value).unwrap();
-                    let block_number = key_parts[0].parse::<u64>().unwrap();
+                    match serde_json::from_slice::<CustomMsgSend>(&value) {
+                        Ok(msg_send) => {
+                            let block_number = key_parts[0].parse::<u64>().unwrap();
+                            let timestamp = key_parts[2].parse::<i64>().unwrap();
 
-                    let timestamp = key_parts[2].parse::<i64>().unwrap();
+                            let formatted_date = format_date(timestamp);
 
-                    // Convert timestamp to Option<NaiveDateTime>
-                    let naive_opt = NaiveDateTime::from_timestamp_opt(timestamp, 0);
-
-                    let mut _datetime_utc: Option<DateTime<Utc>> = None;
-
-                    if let Some(naive_datetime) = naive_opt {
-                        // Convert Option<NaiveDateTime> to DateTime
-                        _datetime_utc = Some(DateTime::<Utc>::from_utc(naive_datetime, Utc));
-                    } else {
-                        error!("Invalid timestamp: {}", timestamp);
-                        continue; // skip this iteration if timestamp is invalid
+                            response_data.push(TransactionResponse {
+                                tx_hash: key_parts[3].to_string(),
+                                block_number,
+                                formatted_date,
+                                data: msg_send,
+                            });
+                        }
+                        Err(e) => error!("Failed to deserialize msgSend: {}", e),
                     }
-
-                    let datetime_utc = _datetime_utc.unwrap(); // we can safely unwrap because of the `continue` above
-
-                    let datetime_local: DateTime<Local> = datetime_utc.into();
-
-                    // Extract month, day, and year
-                    let month = datetime_local.month();
-                    let day = datetime_local.day();
-                    let year = datetime_local.year();
-
-                    // Format the date string
-                    let formatted_date = format!("{:02}-{:02}-{}", month, day, year);
-                    let api_response = ApiResponse {
-                        tx_hash: key_parts[3].to_string(),
-                        data: serde_json::to_value(&msg_send).unwrap(),
-                    };
-
-                    response_data
-                        .entry(block_number)
-                        .or_insert((formatted_date, Vec::new()))
-                        .1
-                        .push(api_response);
                 }
             }
             Err(err) => {
@@ -158,22 +209,7 @@ pub async fn get_all_msg_send_transactions(db: web::Data<Arc<DB>>) -> impl Respo
         }
     }
 
-    // Converting the HashMap to a Vec and sorting it by block number
-    let mut response_data: Vec<_> = response_data.into_iter().collect();
-    response_data.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // Convert Vec of tuples into Vec of BlockTransactions
-    let response_data: Vec<_> = response_data
-        .into_iter()
-        .map(
-            |(block_number, (formatted_date, transactions))| BlockTransactions {
-                block_number,
-                formatted_date,
-                transactions,
-            },
-        )
-        .collect();
-
+    response_data.sort_by(|a, b| b.block_number.cmp(&a.block_number));
     HttpResponse::Ok().json(response_data)
 }
 

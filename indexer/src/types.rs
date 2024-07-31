@@ -50,3 +50,11 @@ pub struct CustomMsg {
     pub type_url: String,
     pub value: serde_json::Value,
 }
+
+#[derive(Serialize)]
+pub struct TransactionResponse {
+    pub tx_hash: String,
+    pub block_number: u64,
+    pub formatted_date: String,
+    pub data: CustomMsgSend,
+}

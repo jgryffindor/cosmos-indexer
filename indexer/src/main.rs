@@ -14,13 +14,17 @@ const PORT: u16 = 9000;
 
 use actix_cors::Cors;
 use actix_web::web::Path;
-use actix_web::{error, middleware::Logger, HttpResponse};
-use actix_web::{get, web, App, HttpServer, Responder};
+use actix_web::{
+    error, get, middleware::Logger, middleware::NormalizePath, middleware::TrailingSlash, web, App,
+    HttpResponse, HttpServer, Responder,
+};
+
 use log::error;
 
 use env_logger::Env;
 use rocksdb::Options;
 use rocksdb::DB;
+use serde_json::json;
 
 use clap::Parser;
 use std::sync::Arc;
@@ -72,6 +76,19 @@ async fn get_msg_send_transactions_by_address_and_direction(
     .await
 }
 
+#[get("/transactions")]
+async fn get_all_transactions(db: web::Data<Arc<DB>>) -> impl Responder {
+    transactions::endpoints::get_all_transactions(db).await
+}
+
+#[get("/transactions/{address}")]
+async fn get_all_transactions_by_address(
+    db: web::Data<Arc<DB>>,
+    address: Path<String>,
+) -> impl Responder {
+    transactions::endpoints::get_all_transactions_by_address(db, address.into_inner()).await
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
@@ -103,16 +120,24 @@ async fn main() -> std::io::Result<()> {
                     .allow_any_method()
                     .max_age(3600),
             )
+            .wrap(NormalizePath::new(TrailingSlash::Trim))
             .app_data(api_db.clone())
             .app_data(web::JsonConfig::default().error_handler(|err, _req| {
                 error!("JSON error: {:?}", err);
                 error::InternalError::from_response(err, HttpResponse::BadRequest().finish()).into()
             }))
+            .service(get_all_transactions)
+            .service(get_all_transactions_by_address)
             .service(get_all_msg_send_transactions)
             .service(get_all_msg_ibc_transfer_transactions)
             .service(get_msg_send_transactions_by_address)
             .service(get_msg_send_transactions_by_address_and_direction)
-            .default_service(web::route().to(|| HttpResponse::NotFound()))
+            .service(web::scope("").default_service(web::route().to(|| async {
+                HttpResponse::NotFound().json(json!({
+                    "error": "Not Found",
+                    "message": "The requested resource could not be found."
+                }))
+            })))
     });
 
     let server = server.bind(format!("{}:{}", DOMAIN, PORT))?;
