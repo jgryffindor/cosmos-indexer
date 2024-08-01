@@ -18,6 +18,7 @@ use actix_web::{
     error, get, middleware::Logger, middleware::NormalizePath, middleware::TrailingSlash, web, App,
     HttpResponse, HttpServer, Responder,
 };
+use shuttle_actix_web::ShuttleActixWeb;
 
 use log::error;
 
@@ -89,28 +90,36 @@ async fn get_all_transactions_by_address(
     transactions::endpoints::get_all_transactions_by_address(db, address.into_inner()).await
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let args = Args::parse();
-    openssl_probe::init_ssl_cert_env_vars();
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-
-    let mut db_options = Options::default();
+#[shuttle_runtime::main]
+async fn actix_web(
+    #[shuttle_shared_db::Postgres] pool: sqlx::PgPool,
+) -> ShuttleActixWeb<impl FnOnce(&mut web::ServiceConfig) + Send + Clone + 'static> {
+    // Initialize your RocksDB
+    let mut db_options = rocksdb::Options::default();
     db_options.create_if_missing(true);
     let db = Arc::new(DB::open(&db_options, "transactions").expect("Failed to open database"));
     let api_db = web::Data::new(db.clone());
 
-    // Pass the arguments to the transaction_info_thread
-    transaction_info_thread(
+    // Initialize your transaction_info_thread
+    // You might need to modify this to work with Shuttle's environment
+    transactions::database::transaction_info_thread(
         db.clone(),
-        args.chain_node_grpc,
-        args.chain_prefix,
-        args.test_mode,
-        args.test_block_limit,
+        std::env::var("CHAIN_NODE_GRPC")
+            .unwrap_or_else(|_| "http://66.172.36.142:2119".to_string()),
+        std::env::var("CHAIN_PREFIX").unwrap_or_else(|_| "manifest".to_string()),
+        std::env::var("TEST_MODE").is_ok(),
+        std::env::var("TEST_BLOCK_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100000),
     );
 
-    let server = HttpServer::new(move || {
-        App::new()
+    let config = move |cfg: &mut web::ServiceConfig| {
+        cfg.app_data(api_db.clone())
+            .app_data(web::JsonConfig::default().error_handler(|err, _req| {
+                error!("JSON error: {:?}", err);
+                error::InternalError::from_response(err, HttpResponse::BadRequest().finish()).into()
+            }))
             .wrap(Logger::default())
             .wrap(Logger::new("%a %{User-Agent}i"))
             .wrap(
@@ -121,11 +130,6 @@ async fn main() -> std::io::Result<()> {
                     .max_age(3600),
             )
             .wrap(NormalizePath::new(TrailingSlash::Trim))
-            .app_data(api_db.clone())
-            .app_data(web::JsonConfig::default().error_handler(|err, _req| {
-                error!("JSON error: {:?}", err);
-                error::InternalError::from_response(err, HttpResponse::BadRequest().finish()).into()
-            }))
             .service(get_all_transactions)
             .service(get_all_transactions_by_address)
             .service(get_all_msg_send_transactions)
@@ -137,10 +141,8 @@ async fn main() -> std::io::Result<()> {
                     "error": "Not Found",
                     "message": "The requested resource could not be found."
                 }))
-            })))
-    });
+            })));
+    };
 
-    let server = server.bind(format!("{}:{}", DOMAIN, PORT))?;
-    server.run().await?;
-    Ok(())
+    Ok(config.into())
 }
