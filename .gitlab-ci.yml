@@ -7,9 +7,6 @@ default:
   services:
     - docker:24.0.5-dind
 
-before_script:
-  - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $DOCKER_REGISTRY
-
 build:
   stage: build
   variables:
@@ -22,15 +19,22 @@ build:
     - docker-builder
   before_script:
     - docker info
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - export ARTIFACT_NAME="$CI_PROJECT_NAME:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
-    - docker build -t $DOCKER_REGISTRY/${ARTIFACT_NAME} .
+    - docker build -t ${ARTIFACT_NAME} .
+    - docker push $CI_REGISTRY_IMAGE:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}
+  artifacts:
+    paths:
+      - .docker
 
 push:
   stage: push
   # only:
   #   - main
   #   - master
+  before_script:
+    - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $DOCKER_REGISTRY
   script:
     - export ARTIFACT_NAME="$CI_PROJECT_NAME:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
     - docker push $DOCKER_REGISTRY/${ARTIFACT_NAME} 
