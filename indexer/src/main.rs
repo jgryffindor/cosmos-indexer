@@ -8,7 +8,7 @@ const DEVELOPMENT: bool = cfg!(feature = "development");
 const DOMAIN: &str = if cfg!(test) || DEVELOPMENT {
     "localhost"
 } else {
-    "localhost"
+    "0.0.0.0"
 };
 const PORT: u16 = 9000;
 
