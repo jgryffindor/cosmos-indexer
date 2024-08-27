@@ -19,22 +19,24 @@ build:
     - docker-builder
   before_script:
     - docker info
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - export ARTIFACT_NAME="$CI_REGISTRY_IMAGE:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
     - docker build -t ${ARTIFACT_NAME} .
-    # - docker push ${ARTIFACT_NAME}
+    - docker push  ${ARTIFACT_NAME}
 
-push:
-  stage: push
-  tags:
-    - docker-builder
-  # only:
-  #   - main
-  #   - master
-  before_script:
-    - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $DOCKER_REGISTRY
-  script:
-    - export ARTIFACT_NAME="$CI_PROJECT_NAME:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
-    - docker push ${ARTIFACT_NAME} 
-  dependencies:
-    - build
+# push:
+#   stage: push
+#   # only:
+#   #   - main
+#   #   - master
+#   before_script:
+#     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+#   script:
+#     - export ARTIFACT_NAME="$CI_PROJECT_NAME:${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+#     - docker pull ${ARTIFACT_NAME}
+#     - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD $DOCKER_REGISTRY
+#     - docker push $DOCKER_REGISTRY/${ARTIFACT_NAME} 
+#   dependencies:
+#     - build 
+
