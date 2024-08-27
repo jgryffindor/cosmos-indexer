@@ -20,6 +20,7 @@ build:
   tags:
     - docker-builder
   before_script:
+    - apt-get update && apt-get -y install curl
     - ping -c 4 registry.liftedinit.org
     - curl -v https://registry.liftedinit.org:8443/v2/
     - docker info
