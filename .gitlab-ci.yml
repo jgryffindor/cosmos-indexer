@@ -11,8 +11,8 @@ build:
   stage: build
   variables:
       GIT_SUBMODULE_STRATEGY: recursive
-      DOCKER_CLIENT_TIMEOUT: 300
-      COMPOSE_HTTP_TIMEOUT: 300
+      DOCKER_CLIENT_TIMEOUT: 600
+      COMPOSE_HTTP_TIMEOUT: 600
   # only:
   #   - tags
   rules:
@@ -22,7 +22,7 @@ build:
   before_script:
     - apt-get update && apt-get -y install curl
     - ping -c 4 registry.liftedinit.org
-    - curl -v https://registry.liftedinit.org:8443/v2/
+    # - curl -v https://registry.liftedinit.org:8443/v2/
     - docker info
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
   script:
